@@ -1,10 +1,7 @@
-// In-memory storage for MCP server registry
+// SQLite-backed storage for MCP server registry
+// All public function signatures are identical to the original in-memory implementation.
 
-/** @type {Map<string, object>} server_id -> server record */
-const servers = new Map();
-
-/** @type {Map<string, object[]>} server_id -> health check history */
-const healthHistory = new Map();
+import { getDb } from './db.js';
 
 let idCounter = 0;
 
@@ -12,11 +9,58 @@ function genId() {
   return `srv_${Date.now().toString(36)}_${(++idCounter).toString(36)}`;
 }
 
+// ── helpers ──
+
+function rowToServer(row) {
+  if (!row) return null;
+  return {
+    id: row.server_id,
+    name: row.name,
+    url: row.url,
+    transport: row.transport,
+    description: row.description,
+    org_id: row.org_id,
+    version: row.version,
+    tools: JSON.parse(row.tags_json || '[]'),
+    registered_at: row.registered_at,
+    last_health_check: row.last_check || null,
+    health_status: row.status,
+    ...JSON.parse(row.health_json || '{}'),
+  };
+}
+
 // ── Registration ──
 
 export function registerServer({ name, url, transport, description, org_id, tools }) {
+  const db = getDb();
   const id = genId();
-  const record = {
+  const now = new Date().toISOString();
+
+  const health_json = JSON.stringify({ total_checks: 0, successful_checks: 0 });
+  const tags_json = JSON.stringify(tools || []);
+
+  db.prepare(`
+    INSERT INTO servers
+      (server_id, name, url, transport, description, org_id, version, status,
+       last_check, health_json, registered_at, tags_json)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    name,
+    url,
+    transport || 'stdio',
+    description || '',
+    org_id || 'default',
+    '',
+    'unknown',
+    null,
+    health_json,
+    now,
+    tags_json,
+  );
+
+  return {
     id,
     name,
     url,
@@ -24,24 +68,67 @@ export function registerServer({ name, url, transport, description, org_id, tool
     description: description || '',
     org_id: org_id || 'default',
     tools: tools || [],
-    registered_at: new Date().toISOString(),
+    registered_at: now,
     last_health_check: null,
     health_status: 'unknown',
     total_checks: 0,
     successful_checks: 0,
   };
-  servers.set(id, record);
-  return record;
 }
 
 // ── Health checks ──
 
 export function recordHealthCheck(serverId, result) {
-  const srv = servers.get(serverId);
-  if (!srv) return null;
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM servers WHERE server_id = ?').get(serverId);
+  if (!row) return null;
+
+  const now = new Date().toISOString();
+  const health = JSON.parse(row.health_json || '{}');
+
+  health.total_checks = (health.total_checks || 0) + 1;
+  if (result.healthy) health.successful_checks = (health.successful_checks || 0) + 1;
+
+  const status = result.healthy ? 'healthy' : 'unhealthy';
+
+  // Merge discovered tools
+  let tags_json = row.tags_json;
+  if (result.tools_discovered?.length) {
+    tags_json = JSON.stringify(result.tools_discovered);
+  }
+
+  db.prepare(`
+    UPDATE servers
+    SET status = ?, last_check = ?, health_json = ?, tags_json = ?
+    WHERE server_id = ?
+  `).run(status, now, JSON.stringify(health), tags_json, serverId);
+
+  // Insert health_checks row
+  db.prepare(`
+    INSERT INTO health_checks (server_id, status, latency_ms, checked_at, error)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    serverId,
+    status,
+    result.latency_ms ?? null,
+    now,
+    result.error || null,
+  );
+
+  // Keep only last 100 health check rows per server
+  db.prepare(`
+    DELETE FROM health_checks
+    WHERE server_id = ?
+      AND id NOT IN (
+        SELECT id FROM health_checks
+        WHERE server_id = ?
+        ORDER BY id DESC
+        LIMIT 100
+      )
+  `).run(serverId, serverId);
 
   const entry = {
-    timestamp: new Date().toISOString(),
+    timestamp: now,
     healthy: result.healthy,
     latency_ms: result.latency_ms,
     error: result.error || null,
@@ -49,58 +136,57 @@ export function recordHealthCheck(serverId, result) {
     tools_discovered: result.tools_discovered || [],
   };
 
-  if (!healthHistory.has(serverId)) healthHistory.set(serverId, []);
-  const history = healthHistory.get(serverId);
-  history.push(entry);
-  if (history.length > 100) history.splice(0, history.length - 100);
-
-  srv.last_health_check = entry.timestamp;
-  srv.total_checks++;
-  if (result.healthy) srv.successful_checks++;
-  srv.health_status = result.healthy ? 'healthy' : 'unhealthy';
-
-  // Merge discovered tools into server record
-  if (result.tools_discovered?.length) {
-    srv.tools = result.tools_discovered;
-  }
-
   return {
     server_id: serverId,
     ...entry,
-    uptime_percent: srv.total_checks > 0
-      ? Math.round((srv.successful_checks / srv.total_checks) * 10000) / 100
+    uptime_percent: health.total_checks > 0
+      ? Math.round((health.successful_checks / health.total_checks) * 10000) / 100
       : 0,
-    total_checks: srv.total_checks,
+    total_checks: health.total_checks,
   };
 }
 
 export function getHealthHistory(serverId) {
-  return healthHistory.get(serverId) || [];
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT status, latency_ms, checked_at, error
+    FROM health_checks
+    WHERE server_id = ?
+    ORDER BY id ASC
+  `).all(serverId);
+
+  return rows.map(r => ({
+    timestamp: r.checked_at,
+    healthy: r.status === 'healthy',
+    latency_ms: r.latency_ms,
+    error: r.error || null,
+  }));
 }
 
 // ── Queries ──
 
 export function getServer(serverId) {
-  return servers.get(serverId) || null;
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM servers WHERE server_id = ?').get(serverId);
+  return rowToServer(row);
 }
 
 export function getServerByUrl(url) {
-  for (const srv of servers.values()) {
-    if (srv.url === url) return srv;
-  }
-  return null;
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM servers WHERE url = ? LIMIT 1').get(url);
+  return rowToServer(row);
 }
 
 export function getServersByOrg(orgId) {
-  const result = [];
-  for (const srv of servers.values()) {
-    if (srv.org_id === (orgId || 'default')) result.push(srv);
-  }
-  return result;
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM servers WHERE org_id = ?').all(orgId || 'default');
+  return rows.map(rowToServer);
 }
 
 export function getAllServers() {
-  return [...servers.values()];
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM servers').all();
+  return rows.map(rowToServer);
 }
 
 // ── Duplicate detection ──
@@ -128,6 +214,16 @@ export function findDuplicates(orgId) {
       const similarity = jaccard(toolsA, toolsB);
       if (similarity > 0.3) {
         const overlap = [...toolsA].filter(t => toolsB.has(t));
+
+        // Persist detected duplicate pair
+        try {
+          const db = getDb();
+          db.prepare(`
+            INSERT INTO duplicates (server_a, server_b, similarity_score, detected_at)
+            VALUES (?, ?, ?, ?)
+          `).run(a.id, b.id, similarity, new Date().toISOString());
+        } catch (_) { /* ignore duplicate insert errors */ }
+
         pairs.push({
           server_a: { id: a.id, name: a.name },
           server_b: { id: b.id, name: b.name },
@@ -147,7 +243,11 @@ export function findDuplicates(orgId) {
 // ── Config export ──
 
 export function exportConfig(serverIds, targetClient) {
-  const selected = serverIds.map(id => servers.get(id)).filter(Boolean);
+  const db = getDb();
+  const selected = serverIds
+    .map(id => db.prepare('SELECT * FROM servers WHERE server_id = ?').get(id))
+    .filter(Boolean)
+    .map(rowToServer);
 
   if (targetClient === 'claude_desktop' || targetClient === 'claude') {
     const mcpServers = {};
@@ -176,7 +276,6 @@ export function exportConfig(serverIds, targetClient) {
   }
 
   if (targetClient === 'vscode') {
-    const inputs = [];
     const mcpServers = {};
     for (const s of selected) {
       const key = s.name.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
@@ -189,7 +288,6 @@ export function exportConfig(serverIds, targetClient) {
     return { format: 'vscode', config: { 'mcp.servers': mcpServers } };
   }
 
-  // Generic fallback
   return {
     format: 'generic',
     config: selected.map(s => ({
@@ -211,11 +309,10 @@ export function recommendConsolidation(orgId) {
   for (const pair of dupes) {
     if (pair.jaccard_similarity < 0.5) continue;
 
-    const a = servers.get(pair.server_a.id);
-    const b = servers.get(pair.server_b.id);
+    const a = getServer(pair.server_a.id);
+    const b = getServer(pair.server_b.id);
     if (!a || !b) continue;
 
-    // Prefer the healthier / more established server
     const aScore = (a.successful_checks / Math.max(a.total_checks, 1));
     const bScore = (b.successful_checks / Math.max(b.total_checks, 1));
     const keep = aScore >= bScore ? a : b;
