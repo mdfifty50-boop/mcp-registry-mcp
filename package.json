@@ -1,0 +1,40 @@
+{
+  "name": "mcp-registry-mcp",
+  "version": "0.1.0",
+  "mcpName": "io.github.mdfifty50-boop/mcp-registry",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mdfifty50-boop/mcp-registry-mcp"
+  },
+  "description": "MCP server for managing MCP server registries — health checks, duplicate detection, and configuration portability",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "mcp-registry-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test src/**/*.test.js"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "registry",
+    "health-check",
+    "duplicate-detection",
+    "configuration",
+    "portability",
+    "server-management",
+    "agentic-engineering",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  }
+}

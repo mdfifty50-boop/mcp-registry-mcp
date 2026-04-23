@@ -1,0 +1,44 @@
+{
+  "serverInfo": {
+    "name": "mcp-registry-mcp",
+    "version": "0.1.0",
+    "description": "MCP server for managing MCP server registries — health checks, duplicate detection, and configuration portability",
+    "author": "THRONE AI",
+    "license": "MIT",
+    "homepage": "https://github.com/mdfifty50-boop/mcp-registry-mcp",
+    "repository": "https://github.com/mdfifty50-boop/mcp-registry-mcp"
+  },
+  "capabilities": {
+    "tools": [
+      { "name": "register_server", "description": "Register an MCP server with metadata, URL, and transport type" },
+      { "name": "health_check", "description": "Check server health — connection test, latency measurement, uptime tracking" },
+      { "name": "find_duplicates", "description": "Find servers with overlapping tool definitions using Jaccard similarity" },
+      { "name": "export_config", "description": "Export portable config for Claude Desktop, Cursor, or VS Code" },
+      { "name": "get_inventory", "description": "List all registered servers with health and usage stats" },
+      { "name": "recommend_consolidation", "description": "Suggest merging duplicate or overlapping servers" },
+      { "name": "check_before_install", "description": "Pre-install health, security, and token cost report for a server" }
+    ],
+    "resources": [
+      { "uri": "mcp-registry://servers", "description": "All registered servers with current health status" }
+    ]
+  },
+  "categories": ["registry", "monitoring", "developer-tools", "agentic-engineering"],
+  "keywords": ["registry", "health-check", "duplicate-detection", "configuration", "portability", "mcp-management"],
+  "pricing": {
+    "free_tier": true,
+    "free_limit": "Unlimited servers, in-memory only",
+    "pro": "$99/month — persistent storage, Slack/Discord alerts, multi-org",
+    "enterprise": "$499/month — SSO, audit logs, custom policies"
+  },
+  "install": {
+    "npm": "npx mcp-registry-mcp",
+    "claude_desktop": {
+      "mcpServers": {
+        "mcp-registry": {
+          "command": "npx",
+          "args": ["mcp-registry-mcp"]
+        }
+      }
+    }
+  }
+}
